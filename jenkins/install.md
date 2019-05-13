@@ -9,3 +9,6 @@
 # Check jenkins status
  - sudo systemctl status jenkins
 
+# Set up nginx
+ Make sure have nginx ready, if not please read nginx/install.md
+
