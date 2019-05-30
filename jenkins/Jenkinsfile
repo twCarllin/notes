@@ -1,0 +1,97 @@
+// Build dockerfile and push to ECR example
+// Author: Carl
+
+pipeline {
+    options
+    {
+        buildDiscarder(logRotator(numToKeepStr: '3'))
+    }
+    agent any
+    environment 
+    {
+        ECRURL = $(ECRPATH)
+    }
+
+    stages {
+        stage('Set up env') {
+            steps {
+                script {
+                    // calculate GIT lastest commit short-hash
+                    gitCommitHash = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    shortCommitHash = gitCommitHash.take(7)
+                    // calculate a sample version tag
+                    VERSION = shortCommitHash
+                }
+            }
+        }
+
+        stage('Parallel Task to Build Images') {
+            when {
+                anyOf { branch "master"; tag "release-*" }
+            }
+
+            steps {
+                script {
+                    def project_name = sh(returnStdout: true, script:
+                        """ #!/bin/sh
+                            basename `git config remote.origin.url |sed "s/\.git$//"` | sed -E 's#^(service|pipeline)_##g'
+                        """).trim()
+
+                    def tasks = [:]
+
+                    if (project_name == "xxx") {
+                        tasks["${project_name}"] = {
+                            stage("${image}") {
+                                echo 'Build docker'
+
+                                image_tag = "${prefix}" + "/" + "${project_name}"
+                                sh("docker build -t ${image_tag} .")
+
+                                echo 'ECR login'
+                                sh("aws ecr get-login --no-include-email --region ap-southeast-1 | sed -e 's#-e none##g' | sed -e 's#https//##g' | xargs xargs")
+
+                                echo 'Push to ECR'
+                                script
+                                {
+                                    docker.withRegistry("$ECRURL") {
+                                        docker.image("$image_tag").push("$VERSION")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        def strImages = sh(returnStdout: true, script: 
+                            """ #!/bin/sh
+                                find . -name Dockerfile -print0 | xargs -0 -n1 dirname | awk -F'/' '{print \$NF}'
+                            """)
+                        def imagelist = strImages.split("\n")
+                        for (image in imagelist) {
+                            tasks["${image}"] = {
+                                stage("${image}") {
+                                    echo 'Build docker'
+
+                                    image_tag =  "${prefix}" + "/" + "${project_name}" + "/" + "${image}"
+                                    sh("docker build -t ${image_tag} ${image}")
+
+                                    echo 'ECR login'
+                                    sh("aws ecr get-login --no-include-email --region ap-southeast-1 | sed -e 's#-e none##g' | sed -e 's#https//##g' | xargs xargs")
+
+                                    echo 'Push to ECR'
+                                    script
+                                    {
+                                        docker.withRegistry("$ECRURL") {
+                                            docker.image("$image_tag").push("$VERSION")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    parallel tasks
+                }
+            }
+        }
+    }
+}
